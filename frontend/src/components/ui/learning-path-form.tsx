@@ -73,7 +73,7 @@ export function LearningPathForm({ className, onCreateSuccess, ...props }: Learn
       const token = getToken()
 
       // send POST request also tells backend who made it 
-      const res = await fetch("http://127.0.0.1:8000/learning-paths/", {
+      const res = await fetch("/api/learning-paths/", {
         method: "POST",
         headers: {
           "Accept": "application/json",

@@ -26,7 +26,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
             }
 
             try {
-                const res = await fetch("http://127.0.0.1:8000/users/me", {
+                const res = await fetch("/api/users/me", {
                     method: "GET",
                     headers: {
                         Authorization: `Bearer ${token}`,

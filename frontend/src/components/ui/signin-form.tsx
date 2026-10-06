@@ -83,7 +83,7 @@ export function SigninForm({className, onRegisterSuccess, onAutoLoginSuccess, ..
   //FixMe: Need to change page to dashboard on successfull login
   async function onSubmit(data: z.infer<typeof formSchema>){
     //sending http request
-    const res = await fetch("http://127.0.0.1:8000/users/register", {
+    const res = await fetch("/api/users/register", {
       method: "POST",
       headers: {
         "Accept": "application/json",
@@ -113,7 +113,7 @@ export function SigninForm({className, onRegisterSuccess, onAutoLoginSuccess, ..
     //login endpoint accepts form-encoded `username`+`password` (oauth2 style)
     //and `username` here is actually the email, matching the login form.
     try {
-      const loginRes = await fetch("http://127.0.0.1:8000/users/login", {
+      const loginRes = await fetch("/api/users/login", {
         method: "POST",
         headers: {
           Accept: "application/json",

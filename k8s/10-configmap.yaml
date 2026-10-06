@@ -1,0 +1,32 @@
+# Non-secret configuration only. Nothing here would matter if it leaked.
+# The database password is NOT here -- it lives in 20-secret.yaml, and the
+# backend assembles DATABASE_URL from both at container start (see
+# 40-backend.yaml, the env: block with $(VAR) interpolation).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: learning-path
+data:
+  # JWT signing algorithm. Public by design -- the security is in the key.
+  ALGORITHM: "HS256"
+  # Access-token lifetime. An operational tuning knob, not a secret.
+  ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+
+  # Connection coordinates for Postgres. Host is the Service name from
+  # 30-postgres.yaml; in-cluster DNS resolves it to the ClusterIP.
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "learning_paths"
+---
+# Postgres' own non-secret settings. PGDATA points at a *subdirectory* of the
+# mounted volume rather than the mount root: many volume types drop a
+# lost+found/ at the root, and `initdb` refuses to run in a non-empty dir.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: learning-path
+data:
+  POSTGRES_DB: "learning_paths"
+  PGDATA: "/var/lib/postgresql/data/pgdata"

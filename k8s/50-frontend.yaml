@@ -1,0 +1,119 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: learning-path
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: learning-path
+  labels:
+    app: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: frontend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000              # the "node" user in node:20-alpine
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          # Built from frontend/Dockerfile. Side-load onto every node; keep
+          # IfNotPresent (no registry in the lab).
+          image: learning-path-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          # No env needed: NODE_ENV / HOSTNAME / PORT are baked into the
+          # image, and every API call the browser makes is a relative /api/*
+          # path resolved by the Ingress -- the frontend never needs to know
+          # the backend's address.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # --- probes ---------------------------------------------------
+          startupProbe:
+            tcpSocket:
+              port: 3000
+            periodSeconds: 2
+            failureThreshold: 20          # Next standalone boots in ~1s; ~40s budget
+          # readiness: GET / renders the landing page. It's a server
+          # component with no backend call, so a green check means "this pod
+          # can serve HTML", which is all the frontend does.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness: TCP only. Same reasoning as the backend -- a restart is
+          # the heavy hammer; reserve it for a genuinely wedged process, and
+          # don't couple it to anything that can fail for external reasons.
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # Measured idle RSS ~88 MiB. Data fetching in this app is
+            # client-side (browser -> /api via Ingress), so server-side work
+            # here is just HTML rendering -- light. Request 128Mi covers
+            # baseline + a handful of concurrent SSR renders.
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            # 256Mi ceiling: Node heap + burst of renders, tight enough to
+            # catch a leak. CPU 500m (vs the backend's 1 core): no
+            # Argon2-class CPU work on this path, so the burst ceiling is
+            # lower; still 10x the request so normal traffic never throttles.
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/.next/cache   # Next writes its fetch/render cache here; RO rootfs
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}

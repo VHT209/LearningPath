@@ -1,0 +1,48 @@
+# Single entry point. One hostname, two path rules:
+#   /api/...  -> backend  (prefix stripped before the request reaches it)
+#   /...      -> frontend
+#
+# This is the cluster-side half of the contract the frontend was built to:
+# every browser call is a relative /api/* path, so it only works if something
+# in front routes /api to the backend. In local `next dev` that's the
+# next.config rewrite; here it's this Ingress.
+#
+# PREREQUISITE: kubeadm installs no Ingress controller. Install ingress-nginx
+# first. On bare-metal VMs there's no cloud LoadBalancer, so its Service ends
+# up NodePort (reach it at https://<any-node-ip>:<nodeport>) unless you also
+# run MetalLB to get a real LoadBalancer IP.
+#
+# The rewrite-target annotation is ingress-nginx-specific. "/api(/|$)(.*)"
+# captures the path after /api into regex group 2; "/$2" replaces the whole
+# path with just that. So:
+#   /api/users/login -> backend gets /users/login
+#   /api/health      -> backend gets /health   (the probe endpoint)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: learning-path
+  namespace: learning-path
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    # No host: -> matches any Host header, so it works via a raw node IP with
+    # no DNS. Add `host: learning-path.local` (and an /etc/hosts entry
+    # pointing at a node IP) if you want name-based routing.
+    - http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000

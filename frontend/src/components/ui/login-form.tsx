@@ -85,7 +85,7 @@ export function LoginForm({className, onLoginSuccess, onSwitchToSignup, ...props
     //   form.reset()
 
     // sends email and pass to backend login endpoint
-    const res = await fetch("http://127.0.0.1:8000/users/login", {
+    const res = await fetch("/api/users/login", {
       method: "POST",
       headers: {
         // send back json

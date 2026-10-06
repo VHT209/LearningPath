@@ -240,7 +240,7 @@ export default function Schedule() {
       }
 
       try {
-        const listRes = await fetch("http://127.0.0.1:8000/learning-paths/", {
+        const listRes = await fetch("/api/learning-paths/", {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (listRes.status === 401) {
@@ -254,7 +254,7 @@ export default function Schedule() {
         const detailed = await Promise.all(
           list.map(async (p) => {
             const res = await fetch(
-              `http://127.0.0.1:8000/learning-paths/${p.id}`,
+              `/api/learning-paths/${p.id}`,
               { headers: { Authorization: `Bearer ${token}` } }
             );
             if (!res.ok) return null;

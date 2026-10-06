@@ -1,0 +1,149 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NetworkPolicy is enforced by the CNI, NOT by Kubernetes itself. On a kubeadm
+# cluster running Flannel (a common default) these objects are accepted by the
+# API server and then SILENTLY IGNORED -- every rule below is a no-op and
+# Postgres stays reachable from every pod. Calico, Cilium, Antrea and Weave
+# enforce them. Check with:  kubectl get pods -n kube-system | grep -Ei 'calico|cilium|flannel|antrea|weave'
+# If you're on Flannel and want enforcement, add Calico for policy or switch CNI.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# (1) THE ONE YOU ASKED FOR: only the backend may reach Postgres.
+# The moment this policy selects the postgres pods, their ingress switches to
+# default-deny -- anything not explicitly allowed here is dropped. So this
+# single object is what enforces "only backend": no separate deny rule needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-backend
+  namespace: learning-path
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# (2) Namespace-wide default-deny for ingress. Without this, frontend and
+# backend pods accept connections from anywhere in the cluster. With it, the
+# only reachable pods are the ones given an explicit allow below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: learning-path
+spec:
+  podSelector: {}          # every pod in the namespace
+  policyTypes: ["Ingress"]
+  # no ingress: block -> deny all
+---
+# (3) Let the ingress-nginx controller reach the backend. Traffic from the
+# browser enters at the controller (in namespace ingress-nginx) and is
+# proxied from there -- so the allow is scoped to that namespace, not to any
+# pod inside learning-path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-from-ingress
+  namespace: learning-path
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# (4) Same for the frontend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-from-ingress
+  namespace: learning-path
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# (5) Egress: allow every pod to resolve DNS. This is here as a guard for when
+# you add egress restrictions (block 6): the first egress rule on a pod flips
+# it to default-deny-egress, which silently breaks name resolution and is the
+# single most common NetworkPolicy footgun. Harmless on its own.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: learning-path
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# (6) OPTIONAL egress lock-down for the backend. Uncomment to restrict where
+# the backend can send traffic: Postgres, DNS, and outbound HTTPS (Groq +
+# YouTube APIs in services/ai.py / services/resource.py). If the AI features
+# stop working after applying this, widen or remove it -- that's the footgun.
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: backend-egress
+#   namespace: learning-path
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: backend
+#   policyTypes: ["Egress"]
+#   egress:
+#     - to:
+#         - podSelector:
+#             matchLabels:
+#               app: postgres
+#       ports:
+#         - protocol: TCP
+#           port: 5432
+#     - to:
+#         - namespaceSelector:
+#             matchLabels:
+#               kubernetes.io/metadata.name: kube-system
+#       ports:
+#         - protocol: UDP
+#           port: 53
+#         - protocol: TCP
+#           port: 53
+#     - to:
+#         - ipBlock:
+#             cidr: 0.0.0.0/0
+#             except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]  # tighten to your pod/service CIDRs
+#       ports:
+#         - protocol: TCP
+#           port: 443

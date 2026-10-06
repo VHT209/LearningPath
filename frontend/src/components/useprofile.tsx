@@ -68,7 +68,7 @@ async function handleDeleteAccount() {
     let backendOk = false
 
     try {
-        const res = await fetch("http://127.0.0.1:8000/users/me", {
+        const res = await fetch("/api/users/me", {
             method: "DELETE",
             headers: {
                 Accept: "application/json",
@@ -103,7 +103,7 @@ export async function handleLogOut() {
     const token = getToken()
 
     try {
-        const res = await fetch("http://127.0.0.1:8000/users/logout", {
+        const res = await fetch("/api/users/logout", {
             method: "POST",
             headers: {
                 Accept: "application/json",
@@ -148,7 +148,7 @@ export function AccountForm({ className, onRegisterSuccess, ...props
                 toast.error("no login token found")
                 return
             }
-            const res = await fetch("http://127.0.0.1:8000/users/me", {
+            const res = await fetch("/api/users/me", {
                 method: "GET",
                 headers: {
                     Accept: "application/json",
@@ -195,7 +195,7 @@ export function AccountForm({ className, onRegisterSuccess, ...props
         }
 
         //sending http request
-        const res = await fetch("http://127.0.0.1:8000/users/update", {
+        const res = await fetch("/api/users/update", {
             method: "PUT",
             headers: {
                 "Accept": "application/json",

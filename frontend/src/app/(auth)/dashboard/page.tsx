@@ -46,7 +46,7 @@ export default function Dashboard() {
 
     setLoading(true)
     try {
-      const res = await fetch("http://127.0.0.1:8000/learning-paths/", {
+      const res = await fetch("/api/learning-paths/", {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error("Failed to fetch learning paths")
@@ -67,7 +67,7 @@ export default function Dashboard() {
 
     setDeletingId(pathId)
     try {
-      const res = await fetch(`http://127.0.0.1:8000/learning-paths/${pathId}`, {
+      const res = await fetch(`/api/learning-paths/${pathId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       })

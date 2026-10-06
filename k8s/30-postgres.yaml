@@ -1,0 +1,156 @@
+# ClusterIP Service for Postgres. The backend connects to "postgres:5432";
+# in-cluster DNS gives that name a stable ClusterIP for the life of the
+# Service, independent of pod restarts / reschedules.
+#
+# Note: a StatefulSet more conventionally points serviceName at a *headless*
+# Service (clusterIP: None) to get per-pod DNS like postgres-0.postgres.<ns>.
+# With a single replica reached through the Service VIP that buys nothing, so
+# this is a normal ClusterIP. If you ever scale Postgres (replication), switch
+# serviceName to a headless Service so each replica is individually addressable.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: learning-path
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: learning-path
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # SIGTERM -> Postgres "fast shutdown" (roll back open txns, checkpoint,
+      # exit). Usually quick, but give it real headroom so the pod is never
+      # SIGKILLed mid-checkpoint.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        # postgres:16-alpine's postgres user is uid/gid 70. Run as it
+        # explicitly (don't rely on the image's USER), and set fsGroup so the
+        # kubelet chowns the mounted volume to gid 70 -- otherwise the very
+        # first `initdb` fails with "permission denied" on the volume root.
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Pinned by digest. tag at pin time: 16-alpine
+          image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: postgres-config
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: POSTGRES_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # --- probes -----------------------------------------------------
+          # startup: covers first-boot initdb, which can take a while. Until
+          # this passes, liveness/readiness are not evaluated at all, so a
+          # slow init never counts as a liveness failure.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1']
+            periodSeconds: 5
+            failureThreshold: 30            # up to ~150s to come up
+          # readiness: gates whether the Service sends this pod connections.
+          # Checked often, fails fast, recovers after one good check.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1']
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness: only asks "is the postmaster accepting TCP at all". A
+          # plain socket check, slow cadence, generous failure budget --
+          # restarting a database is far more disruptive than restarting a
+          # stateless app, so the bar to trigger it is deliberately high.
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # idle RSS measured at ~23 MiB, but Postgres reserves shared
+            # memory up front: shared_buffers defaults to 128 MiB. Request
+            # 256 MiB = that + per-connection work areas + OS cache floor,
+            # so the scheduler always places it somewhere it can actually run.
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            # 512 MiB ceiling: room for work_mem spikes on the 4-table join
+            # (User->LearningPath->WeeklyPlan->Resource) plus WAL buffers,
+            # while still catching a genuine leak. Postgres + OOM-kill can be
+            # ugly, so this sits comfortably above the real working set, not
+            # right on top of it.
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # readOnlyRootFilesystem:true means these must be real writable
+            # mounts: the unix socket dir and temp files.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  # PVC per pod. On delete of the StatefulSet the PVC is NOT removed, so the
+  # data survives a full `kubectl delete -f`. Delete the PVC by hand to wipe.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # kubeadm ships NO default StorageClass. This name must match a real
+        # provisioner in your cluster (e.g. Rancher local-path-provisioner).
+        # Without one, the PVC stays Pending and the pod never starts. See
+        # the notes for the local-path install one-liner or a manual PV.
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi

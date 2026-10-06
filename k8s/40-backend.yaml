@@ -1,0 +1,178 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: learning-path
+  labels:
+    app: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: learning-path
+  labels:
+    app: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0        # never drop below 2 ready during a rollout
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # Spread the 2 replicas across nodes when possible, so losing one VM
+      # doesn't take the whole backend down. "ScheduleAnyway" = a soft
+      # preference; a 2-replica/3-node cluster can always honor it, but the
+      # pod still schedules if it somehow can't.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001            # the "app" user baked into backend/Dockerfile
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # main.py runs create_all() in a startup hook -- if Postgres isn't
+      # reachable when uvicorn boots, the process exits and the pod
+      # CrashLoopBackOffs (recovering only after exponential backoff, up to
+      # 5 min between tries). This init gate turns that into a clean wait.
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: backend
+          # Built from backend/Dockerfile. No registry in a kubeadm lab, so
+          # load the image onto every node (e.g. `docker save | ctr -n
+          # k8s.io images import -`) and keep IfNotPresent -- "Always" would
+          # try to pull from a registry that isn't there and fail.
+          image: learning-path-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          # Build DATABASE_URL from non-secret parts (ConfigMap) + secret
+          # parts (Secret). $(VAR) interpolation requires each referenced var
+          # to appear earlier in this list -- hence the ordering.
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: POSTGRES_USER }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: POSTGRES_PASSWORD }
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef: { name: backend-config, key: POSTGRES_HOST }
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef: { name: backend-config, key: POSTGRES_PORT }
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef: { name: backend-config, key: POSTGRES_DB }
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: SECRET_KEY }
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: GROQ_API_KEY }
+            - name: YOUTUBE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: YOUTUBE_API_KEY }
+          envFrom:
+            - configMapRef:
+                name: backend-config     # ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true   # image ships everything it needs baked in
+            capabilities:
+              drop: ["ALL"]
+          # --- probes ---------------------------------------------------
+          # startup: plain TCP, fast cadence, wide budget. Covers interpreter
+          # start + `import app.main` (which validates settings and imports
+          # every model). Liveness doesn't run until this passes.
+          startupProbe:
+            tcpSocket:
+              port: 8000
+            periodSeconds: 2
+            failureThreshold: 30           # up to ~60s to boot
+          # readiness: hits /health, which runs `SELECT 1`. This is the probe
+          # that's ALLOWED to fail transiently -- when Postgres is briefly
+          # unavailable the pod drops out of the Service and stops getting
+          # traffic, then rejoins on the next good check. No restart.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3            # ~30s of DB failure -> out of rotation
+            successThreshold: 1            # one good check -> back in
+          # liveness: plain TCP on the uvicorn port. Proves the event loop is
+          # still accepting connections -- nothing more. Deliberately NOT
+          # /health: if liveness also checked the DB, a 20s Postgres failover
+          # would restart every backend pod at once, converting "some 503s"
+          # into a full outage plus a cold-start stampede. Slow cadence,
+          # because a restart is the expensive, disruptive response.
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3            # ~60s wedged -> kill & restart
+          resources:
+            # Measured idle RSS (VmHWM) ~91 MiB. Request 128Mi = that plus
+            # ~40% for per-request allocation (Pydantic model instances,
+            # SQLAlchemy identity map, JSON encoding). Requests are the
+            # scheduler's reservation and the eviction-order input, so this
+            # is "what a healthy pod actually needs", a bit above idle.
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            # 256Mi ceiling (~2.8x idle): absorbs a burst of concurrent
+            # requests and the buffered upstream AI/YouTube HTTP responses,
+            # while still OOM-killing a real leak within minutes.
+            # CPU 1 core: the app is I/O-bound EXCEPT Argon2 password hashing
+            # on /users/login and /users/register (pwdlib[argon2], tens of ms
+            # pinned at 100% by design). 1 core lets one pod absorb that
+            # without CFS throttling adding latency; it's high enough that
+            # normal traffic never reaches it, present so a runaway loop
+            # can't starve neighbors on a small cluster.
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp             # anyio / uvicorn scratch; RO rootfs
+      volumes:
+        - name: tmp
+          emptyDir: {}

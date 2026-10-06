@@ -64,7 +64,7 @@ export default function LearningPathDetail() {
       }
 
       try {
-        const res = await fetch(`http://127.0.0.1:8000/learning-paths/${params.id}`, {
+        const res = await fetch(`/api/learning-paths/${params.id}`, {
           headers: { Authorization: `Bearer ${token}` },
         })
 

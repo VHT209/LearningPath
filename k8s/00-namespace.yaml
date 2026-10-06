@@ -1,0 +1,16 @@
+# Everything for this app lives in one namespace. This matters for the
+# NetworkPolicy files later: a podSelector is always evaluated *within a
+# namespace*, so keeping the app isolated keeps those selectors from
+# accidentally matching (or being matched by) unrelated workloads.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: learning-path
+  labels:
+    # Opt this namespace into the Pod Security Admission "restricted" profile.
+    # The pod specs in this repo are written to satisfy it (non-root, no
+    # privilege escalation, seccomp RuntimeDefault, all caps dropped). If a
+    # future edit regresses one of those, the API server rejects the pod
+    # instead of silently running it with more privilege than intended.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

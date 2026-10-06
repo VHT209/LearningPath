@@ -13,6 +13,7 @@ from app.routes.user import api_router as user_router
 from app.routes.learning_path import api_router as learning_path_router
 from app.routes.weekly_plan import api_router as weekly_plan_router
 from app.routes.resource import api_router as resource_router
+from app.routes.health import api_router as health_router
 
 
 app = FastAPI(
@@ -28,6 +29,7 @@ def on_startup() -> None:
     create_db_tb()
 
 # adding the user router to the main app
+app.include_router(health_router)
 app.include_router(user_router)
 app.include_router(learning_path_router)
 app.include_router(weekly_plan_router)
